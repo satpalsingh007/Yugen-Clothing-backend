@@ -20,7 +20,6 @@ router.post("/create-order", async (req, res) => {
 
     const order = await razorpay.orders.create(options);
     res.json(order);
-
   } catch (err) {
     console.error("CREATE ORDER ERROR:", err);
     res.status(500).json({ error: "Order creation failed" });
@@ -40,7 +39,9 @@ router.post("/verify-payment", async (req, res) => {
       user,
     } = req.body;
 
+    // ============================
     // 🔐 VERIFY SIGNATURE
+    // ============================
     const body = razorpay_order_id + "|" + razorpay_payment_id;
 
     const expectedSignature = crypto
@@ -49,57 +50,61 @@ router.post("/verify-payment", async (req, res) => {
       .digest("hex");
 
     if (expectedSignature !== razorpay_signature) {
-      return res.status(400).json({ message: "Invalid payment ❌" });
+      return res.status(400).json({
+        message: "Invalid payment ❌",
+      });
     }
 
     let totalAmount = 0;
+
     const orderItems = [];
 
     // ============================
-    // 📦 PROCESS ITEMS
+    // 📦 PROCESS ITEMS SAFELY
     // ============================
-    for (let item of cartItems) {
-      const product = await Product.findById(item.productId);
-
-      if (!product) {
-  return res.status(400).json({
-    message: "Product not found",
-  });
-}
-
+    for (const item of cartItems) {
       const size = item.selectedSize;
 
-      // ✅ SAFE STOCK ACCESS
-      const currentStock =
-        product.stock instanceof Map
-          ? product.stock.get(size) || 0
-          : product.stock[size] || 0;
+      const sizeKey = `stock.${size}`;
 
-      if (currentStock < item.quantity) {
+      // ✅ ATOMIC STOCK UPDATE
+      const updatedProduct = await Product.findOneAndUpdate(
+        {
+          _id: item.productId,
+
+          // stock must still exist
+          [sizeKey]: {
+            $gte: item.quantity,
+          },
+        },
+        {
+          // reduce stock safely
+          $inc: {
+            [sizeKey]: -item.quantity,
+          },
+        },
+        {
+          new: true,
+        },
+      );
+
+      // ❌ SOMEONE ELSE BOUGHT IT
+      if (!updatedProduct) {
         return res.status(400).json({
-          message: `Not enough stock for ${product.name}`,
+          message: `${item.name} (${size}) is sold out`,
         });
       }
 
-      // 🔥 Reduce stock
-      if (product.stock instanceof Map) {
-        product.stock.set(size, currentStock - item.quantity);
-      } else {
-        product.stock[size] = currentStock - item.quantity;
-      }
-
-      await product.save();
-
-      // 📦 Order item
+      // 📦 SAVE ORDER ITEM
       orderItems.push({
-        productId: product._id,
-        name: product.name,
+        productId: updatedProduct._id,
+        name: updatedProduct.name,
         size,
         quantity: item.quantity,
-        price: product.price,
+        price: updatedProduct.price,
       });
 
-      totalAmount += product.price * item.quantity;
+      totalAmount += updatedProduct.price * item.quantity;
     }
 
     // ============================
@@ -121,10 +126,12 @@ router.post("/verify-payment", async (req, res) => {
     res.json({
       message: "Payment verified & order saved ✅",
     });
-
   } catch (err) {
     console.error("VERIFY ERROR:", err);
-    res.status(500).json({ error: err.message });
+
+    res.status(500).json({
+      error: err.message,
+    });
   }
 });
 
