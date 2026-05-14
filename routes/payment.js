@@ -3,7 +3,7 @@ const router = express.Router();
 const razorpay = require("../utils/razorpay");
 const crypto = require("crypto");
 const Product = require("../models/Product");
-const Order = require("../models/order");
+const Order = require("../models/Order");
 
 // ============================
 // 🧾 CREATE ORDER
