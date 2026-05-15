@@ -290,7 +290,8 @@ router.post("/verify-payment", async (req, res) => {
       totalAmount,
       paymentId: razorpay_payment_id,
       orderId: razorpay_order_id,
-      status: "Paid",
+
+      status: hasShortage ? "Partial Fulfilled" : "Paid",
     });
 
     await newOrder.save();
