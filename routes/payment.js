@@ -157,8 +157,7 @@ router.post("/create-order", async (req, res) => {
       currency: "INR",
       receipt: "receipt_" + Date.now(),
 
-      // ✅ MANUAL CAPTURE
-      payment_capture: 0,
+     
     };
 
     const order = await razorpay.orders.create(options);
@@ -265,21 +264,21 @@ router.post("/verify-payment", async (req, res) => {
     }
 
     // ============================
-    // 💳 CAPTURE PAYMENT
-    // ============================
-    try {
-      await razorpay.payments.capture(
-        razorpay_payment_id,
-        totalAmount * 100,
-        "INR",
-      );
-    } catch (captureErr) {
-      console.error("PAYMENT CAPTURE ERROR:", captureErr);
+    // // 💳 CAPTURE PAYMENT
+    // // ============================
+    // try {
+    //   await razorpay.payments.capture(
+    //     razorpay_payment_id,
+    //     totalAmount * 100,
+    //     "INR",
+    //   );
+    // } catch (captureErr) {
+    //   console.error("PAYMENT CAPTURE ERROR:", captureErr);
 
-      return res.status(400).json({
-        message: "Payment authorized but capture failed ❌",
-      });
-    }
+    //   return res.status(400).json({
+    //     message: "Payment authorized but capture failed ❌",
+    //   });
+    // }
 
     // ============================
     // 💾 SAVE ORDER
