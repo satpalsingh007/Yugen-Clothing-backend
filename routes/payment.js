@@ -156,8 +156,6 @@ router.post("/create-order", async (req, res) => {
       amount,
       currency: "INR",
       receipt: "receipt_" + Date.now(),
-
-     
     };
 
     const order = await razorpay.orders.create(options);
@@ -218,9 +216,13 @@ router.post("/verify-payment", async (req, res) => {
 
       const size = item.selectedSize;
 
-      const currentStock = product.stock?.[size] ?? 0;
+      // ✅ SAFE STOCK ACCESS
+      const currentStock =
+        product.stock?.get?.(size) ?? product.stock?.[size] ?? 0;
 
+      // ============================
       // ❌ COMPLETELY SOLD OUT
+      // ============================
       if (currentStock <= 0) {
         hasShortage = true;
 
@@ -228,35 +230,57 @@ router.post("/verify-payment", async (req, res) => {
           productId: product._id,
           name: product.name,
           size,
+
+          quantity: 0,
+
           requestedQuantity: item.quantity,
           fulfilledQuantity: 0,
+
           price: product.price,
+
           status: "Sold Out",
         });
 
         continue;
       }
 
+      // ============================
       // ✅ PARTIAL OR FULL
+      // ============================
       const fulfilledQty = Math.min(currentStock, item.quantity);
 
-      // reduce stock
-      product.stock[size] = currentStock - fulfilledQty;
+      // ✅ REDUCE STOCK CORRECTLY
+      if (product.stock.set) {
+        product.stock.set(size, currentStock - fulfilledQty);
+      } else {
+        product.stock[size] = currentStock - fulfilledQty;
+      }
 
       await product.save();
 
-      // shortage happened
+      // ============================
+      // ⚠️ SHORTAGE DETECTED
+      // ============================
       if (fulfilledQty < item.quantity) {
         hasShortage = true;
       }
 
+      // ============================
+      // 📦 SAVE ORDER ITEM
+      // ============================
       orderItems.push({
         productId: product._id,
         name: product.name,
         size,
+
+        // IMPORTANT
+        quantity: fulfilledQty,
+
         requestedQuantity: item.quantity,
         fulfilledQuantity: fulfilledQty,
+
         price: product.price,
+
         status: fulfilledQty < item.quantity ? "Partial" : "Confirmed",
       });
 
@@ -264,33 +288,24 @@ router.post("/verify-payment", async (req, res) => {
     }
 
     // ============================
-    // // 💳 CAPTURE PAYMENT
-    // // ============================
-    // try {
-    //   await razorpay.payments.capture(
-    //     razorpay_payment_id,
-    //     totalAmount * 100,
-    //     "INR",
-    //   );
-    // } catch (captureErr) {
-    //   console.error("PAYMENT CAPTURE ERROR:", captureErr);
-
-    //   return res.status(400).json({
-    //     message: "Payment authorized but capture failed ❌",
-    //   });
-    // }
-
-    // ============================
     // 💾 SAVE ORDER
     // ============================
     const newOrder = new Order({
       user,
+
       items: orderItems,
+
       totalAmount,
+
       paymentId: razorpay_payment_id,
+
       orderId: razorpay_order_id,
 
-      status: hasShortage ? "Partial Fulfilled" : "Paid",
+      status: orderItems.every((i) => i.fulfilledQuantity === 0)
+        ? "Sold Out After Payment"
+        : hasShortage
+          ? "Partial Fulfilled"
+          : "Paid",
     });
 
     await newOrder.save();
@@ -299,7 +314,7 @@ router.post("/verify-payment", async (req, res) => {
     // 🎉 SUCCESS
     // ============================
     res.json({
-      message: "Payment verified, captured & order saved ✅",
+      message: "Payment verified & order saved ✅",
     });
   } catch (err) {
     console.error("VERIFY ERROR:", err);
