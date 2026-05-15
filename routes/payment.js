@@ -189,14 +189,10 @@ router.post("/verify-payment", async (req, res) => {
     // ============================
     // 🔐 VERIFY SIGNATURE
     // ============================
-    const body =
-      razorpay_order_id + "|" + razorpay_payment_id;
+    const body = razorpay_order_id + "|" + razorpay_payment_id;
 
     const expectedSignature = crypto
-      .createHmac(
-        "sha256",
-        process.env.RAZORPAY_KEY_SECRET
-      )
+      .createHmac("sha256", process.env.RAZORPAY_KEY_SECRET)
       .update(body.toString())
       .digest("hex");
 
@@ -211,54 +207,61 @@ router.post("/verify-payment", async (req, res) => {
 
     const orderItems = [];
 
+    let hasShortage = false;
+
     // ============================
-    // 📦 PROCESS ITEMS SAFELY
+    // 📦 PROCESS ITEMS
     // ============================
     for (const item of cartItems) {
+      const product = await Product.findById(item.productId);
+
+      if (!product) continue;
+
       const size = item.selectedSize;
 
-      const sizeKey = `stock.${size}`;
+      const currentStock = product.stock?.[size] ?? 0;
 
-      // ✅ ATOMIC STOCK UPDATE
-      const updatedProduct =
-        await Product.findOneAndUpdate(
-          {
-            _id: item.productId,
+      // ❌ COMPLETELY SOLD OUT
+      if (currentStock <= 0) {
+        hasShortage = true;
 
-            // stock must still exist
-            [sizeKey]: {
-              $gte: item.quantity,
-            },
-          },
-          {
-            // safely reduce stock
-            $inc: {
-              [sizeKey]: -item.quantity,
-            },
-          },
-          {
-            new: true,
-          }
-        );
-
-      // ❌ SOLD OUT
-      if (!updatedProduct) {
-        return res.status(400).json({
-          message: `${item.name} (${size}) is sold out`,
+        orderItems.push({
+          productId: product._id,
+          name: product.name,
+          size,
+          requestedQuantity: item.quantity,
+          fulfilledQuantity: 0,
+          price: product.price,
+          status: "Sold Out",
         });
+
+        continue;
       }
 
-      // 📦 SAVE ORDER ITEM
+      // ✅ PARTIAL OR FULL
+      const fulfilledQty = Math.min(currentStock, item.quantity);
+
+      // reduce stock
+      product.stock[size] = currentStock - fulfilledQty;
+
+      await product.save();
+
+      // shortage happened
+      if (fulfilledQty < item.quantity) {
+        hasShortage = true;
+      }
+
       orderItems.push({
-        productId: updatedProduct._id,
-        name: updatedProduct.name,
+        productId: product._id,
+        name: product.name,
         size,
-        quantity: item.quantity,
-        price: updatedProduct.price,
+        requestedQuantity: item.quantity,
+        fulfilledQuantity: fulfilledQty,
+        price: product.price,
+        status: fulfilledQty < item.quantity ? "Partial" : "Confirmed",
       });
 
-      totalAmount +=
-        updatedProduct.price * item.quantity;
+      totalAmount += product.price * fulfilledQty;
     }
 
     // ============================
@@ -268,17 +271,13 @@ router.post("/verify-payment", async (req, res) => {
       await razorpay.payments.capture(
         razorpay_payment_id,
         totalAmount * 100,
-        "INR"
+        "INR",
       );
     } catch (captureErr) {
-      console.error(
-        "PAYMENT CAPTURE ERROR:",
-        captureErr
-      );
+      console.error("PAYMENT CAPTURE ERROR:", captureErr);
 
       return res.status(400).json({
-        message:
-          "Payment authorized but capture failed ❌",
+        message: "Payment authorized but capture failed ❌",
       });
     }
 
@@ -300,8 +299,7 @@ router.post("/verify-payment", async (req, res) => {
     // 🎉 SUCCESS
     // ============================
     res.json({
-      message:
-        "Payment verified, captured & order saved ✅",
+      message: "Payment verified, captured & order saved ✅",
     });
   } catch (err) {
     console.error("VERIFY ERROR:", err);
